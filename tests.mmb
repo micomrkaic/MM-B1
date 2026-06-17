@@ -1,0 +1,78 @@
+# tests.mmb -- piped regression checks.  Expected values in comments.
+# Note: RPN throughout, so display precision is set with  N fix  (postfix).
+
+# --- exact decimal: the thing binary doubles get wrong ---
+0.1 0.2 + .                      # 0.30
+
+# --- TVM: 10000 loan, 1% per period, 12 periods, solve payment ---
+clrtvm
+12 n  1 i  10000 pv  0 fv  end
+?pmt .                           # -888.49   (negative = cash paid out)
+
+# --- TVM: solve the rate back out (should recover 1.00%) ---
+clrtvm
+4 fix
+12 n  10000 pv  -888.49 pmt  0 fv
+?i .                             # 1.0000
+2 fix
+
+# --- future value of -100/period for 12 periods at 1% ---
+clrtvm
+12 n  1 i  0 pv  -100 pmt
+?fv .                            # 1268.25
+
+# --- NPV at 10% and IRR: outlay 1000, five inflows of 300 ---
+clrcf
+-1000 cf  300 cf  5 cfn
+10 npv .                         # 137.24
+4 fix
+irr .                            # 15.2382
+2 fix
+
+# --- nominal 12% compounded monthly -> effective annual ---
+4 fix
+12 12 nom>eff .                  # 12.6825
+# effective 12.6825% -> nominal (round trip)
+12.682503013196972 12 eff>nom . # 12.0000
+2 fix
+
+# --- straight-line depreciation: 10000 cost, 1000 salvage, 5 yr ---
+10000 1000 5 sl .                # 1800.00
+# sum-of-years-digits, year 1 of 5
+10000 1000 5 1 soyd .            # 3000.00
+# double-declining balance, year 1 (factor 2)
+10000 1000 5 1 2 db .            # 4000.00
+
+# --- bond: 3% periodic coupon, 3.5% periodic yield, 20 periods, redeem 100 ---
+3 3.5 20 100 bprice .            # 92.89
+# recover the yield from that price
+4 fix
+92.89 3 20 100 byield .          # ~3.5001
+2 fix
+
+# ===== dates =====================================================
+20070115 20070315 ddays .        # 59     actual days
+20260315 30 date+ .              # 20260414
+4 fix
+20070101 20080101 3 yearfrac .   # 1.0000 act/365
+20070101 20080101 2 yearfrac .   # 1.0139 act/360
+2 fix
+
+# --- XNPV / XIRR (Microsoft worked example) ---
+clrxcf
+-10000 20080101 xcf
+2750 20080301 xcf
+4250 20081030 xcf
+3250 20090215 xcf
+2750 20090401 xcf
+9 xnpv .                         # 2086.65
+4 fix
+xirr .                           # 37.3363
+2 fix
+
+# --- dated bond price / yield / accrued (Microsoft examples) ---
+4 fix
+20080215 20171115 5.75 6.5 100 2 0 xprice .       # 94.6344
+20080215 20161115 5.75 95.04287 100 2 0 xyield .  # 6.5000
+20080215 20171115 5.75 2 0 xaccr .                # 1.4375
+2 fix

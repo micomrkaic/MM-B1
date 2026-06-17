@@ -1,0 +1,8 @@
+The files in this directory are the IBM decNumber library, the C reference
+implementation of the General Decimal Arithmetic Specification.
+
+decNumber is distributed under the ICU license (a permissive, BSD-style
+license). See ICU-license.html for the full text. These files are vendored
+unmodified except for build configuration; they are NOT covered by the GPL
+that applies to the rest of MM-B1, and the GPL explicitly permits
+redistributing GPL'd software alongside ICU-licensed components.

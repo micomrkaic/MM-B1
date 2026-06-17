@@ -1,0 +1,402 @@
+\documentclass[11pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage[colorlinks=true,linkcolor=black,urlcolor=blue!60!black]{hyperref}
+
+% ---- colours -----------------------------------------------------------
+\definecolor{ink}{rgb}{0.12,0.12,0.14}
+\definecolor{panel}{rgb}{0.96,0.96,0.97}
+\definecolor{rule}{rgb}{0.55,0.55,0.60}
+
+% ---- calculator I/O listing style --------------------------------------
+\lstdefinestyle{mmb}{
+  basicstyle=\ttfamily\small\color{ink},
+  backgroundcolor=\color{panel},
+  frame=leftline, framerule=1.2pt, rulecolor=\color{rule},
+  framexleftmargin=6pt,
+  xleftmargin=10pt, xrightmargin=4pt,
+  aboveskip=10pt, belowskip=10pt,
+  breaklines=true, columns=fullflexible, keepspaces=true,
+  showstringspaces=false,
+}
+\lstset{style=mmb}
+
+% ---- headings ----------------------------------------------------------
+\titleformat{\section}{\Large\bfseries}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.6em}{}
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[L]{\small\textsc{MM-B1 Reference Manual}}
+\fancyhead[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+
+\newcommand{\w}[1]{\texttt{#1}}
+
+\begin{document}
+
+% ======================================================================
+\begin{titlepage}
+\centering
+\vspace*{3.5cm}
+{\fontsize{64}{64}\selectfont\bfseries MM\,--\,B1}\\[10pt]
+{\Large A Decimal Business RPN Calculator}\\[6pt]
+{\large exact base-10 money $\cdot$ TVM $\cdot$ cash flows $\cdot$ bonds $\cdot$ dates}\\[28pt]
+\rule{0.55\textwidth}{0.4pt}\\[10pt]
+{\large User Manual}\\[4pt]
+{Version 1.1 \quad$\cdot$\quad \today}\\
+\vfill
+{\small In the HP-12C lineage; companion to MM-11 and MM-14.\\
+All arithmetic via the vendored IBM decNumber reference library. \\
+Released under the GNU General Public License, version 3.}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+% ======================================================================
+\section{Introduction}
+
+MM-B1 is a reverse-Polish (RPN) calculator for financial work. It belongs to
+the same family as the author's earlier MM-11 and MM-14 calculators --- the
+same tokenizer, stack, registers, and word-dispatch loop on GNU readline ---
+but it differs in two ways that matter for money.
+
+First, \textbf{the arithmetic is decimal}. Binary floating point cannot
+represent a value as ordinary as \w{0.10}, so a long chain of binary operations
+drifts away from the ledger in the least significant places. MM-B1 computes in
+base 10 with explicit round-half-even (banker's) rounding, so its answers agree
+with SQL \w{NUMERIC}, COBOL packed decimal, Java \w{BigDecimal}, and Python's
+\w{decimal} module --- all implementations of the same General Decimal
+Arithmetic Specification. The engine is IBM's decNumber, the C reference
+implementation of that specification, vendored with the source so there is no
+external decimal dependency.
+
+\begin{lstlisting}
+mmb> 0.1 0.2 +
+   x |               0.30
+\end{lstlisting}
+
+Second, there is a \textbf{real calendar} underneath the bond and cash-flow
+functions: actual day counts, the common day-count conventions, accrued
+interest, and settlement dates, so a bond can be priced on any business day
+rather than only on a coupon date.
+
+\subsection{Conventions used in this manual}
+
+Calculator sessions are shown in panels. What you type follows the \w{mmb>}
+prompt; the lines below it are what the calculator prints. The live display
+labels the stack levels \w{x}, \w{y}, \w{z}, \w{t} from the bottom up, with
+\w{x} the most recent value. In running text, words are shown like \w{?pmt}.
+
+% ======================================================================
+\section{Installing and building}
+
+The only external dependency is GNU readline; the decimal library ships with
+the source.
+
+\begin{lstlisting}
+make            build ./mmb1
+make test       run the regression script tests.mmb
+make run        build and start an interactive session
+\end{lstlisting}
+
+On Linux install readline first (\w{sudo apt install libreadline-dev}). On
+macOS readline is keg-only under Homebrew, so point the build at it:
+
+\begin{lstlisting}
+brew install readline
+make READLINE_PREFIX="$(brew --prefix readline)"
+\end{lstlisting}
+
+The decimal library is portable C and compiles identically on arm64 and
+x86\_64.
+
+% ======================================================================
+\section{The stack and RPN basics}
+
+In RPN you enter operands first and the operation last: \w{3 4 +} leaves
+\w{7}. There is no equals key and there are no parentheses; the stack holds
+intermediate results. After every line MM-B1 prints the whole stack, newest at
+the bottom --- you never need a print command interactively.
+
+\begin{lstlisting}
+mmb> 3 4 +
+   x |               7.00
+mmb> 10 *
+   x |              70.00
+mmb> 1234567.5 dup +
+   y |              70.00
+   x |       2,469,135.00
+\end{lstlisting}
+
+The bottom four levels are named \w{x y z t}; deeper levels are numbered. Use
+\w{dup}, \w{drop}, \w{swap}, and \w{over} to rearrange the stack, \w{clst} to
+clear it, and \w{depth} to push the current count. \w{N fix} sets the number of
+displayed decimal places; the stored value always keeps full 34-digit
+precision. Arithmetic words include \w{+ - * /}, power \w{\^}, \w{chs}
+(negate), \w{inv} (reciprocal), \w{sqrt}, \w{ln}, \w{exp}, and \w{abs}.
+
+A line beginning text after \w{\#} is a comment. When input is piped from a
+file the stack is \emph{not} auto-printed --- use \w{.} to print and pop the
+top value, or \w{.s} to show the stack --- so scripts stay clean and
+predictable.
+
+% ======================================================================
+\section{Time value of money}
+
+MM-B1 uses a \emph{periodic} TVM model. The rate \w{i} is the interest rate
+\textbf{per period, in percent}, and \w{n} is the \textbf{number of periods}.
+A loan at 6\% per year paid monthly is entered as \w{0.5 i} with \w{n} counted
+in months. There is no separate ``payments per year'' setting to reconcile.
+
+The five registers satisfy
+\[
+\mathit{PV}\,(1+r)^n
++ \mathit{PMT}\,(1+r\,\tau)\,\frac{(1+r)^n-1}{r}
++ \mathit{FV} = 0, \qquad r=\frac{i}{100},
+\]
+where $\tau=1$ in \w{begin} mode (annuity due) and $0$ in \w{end} mode (the
+default). The \textbf{sign convention} is that cash received is positive and
+cash paid is negative. A solved payment that comes back negative is telling you
+it is an outflow.
+
+Set any four of \w{n i pv pmt fv} (each consumes the top of the stack) and
+solve for the fifth with \w{?n}, \w{?i}, \w{?pv}, \w{?pmt}, or \w{?fv}; the
+solver stores its answer back into the register and pushes it. \w{tvm} prints
+the register state, \w{clrtvm} resets it.
+
+\subsection{Example: a mortgage}
+
+A \$300{,}000 loan over 30 years at 6\% annual interest, paid monthly.
+
+\begin{lstlisting}
+clrtvm
+360 n  0.5 i  300000 pv  0 fv  end
+?pmt          ->  -1,798.65     monthly payment
+\end{lstlisting}
+
+\w{amort} then prints the full schedule --- interest, principal, and remaining
+balance for each period --- from the current registers.
+
+\subsection{Example: saving toward a goal}
+
+Depositing \$500 at the end of each month for 30 years at 6\% annual:
+
+\begin{lstlisting}
+clrtvm
+360 n  0.5 i  0 pv  -500 pmt
+?fv           ->  502,257.52    balance after 30 years
+\end{lstlisting}
+
+To reach \$1{,}000{,}000 in 25 years at 7\% annual, depositing at the
+\emph{start} of each month, switch to annuity due:
+
+\begin{lstlisting}
+clrtvm
+300 n  0.5833333333 i  0 pv  1000000 fv  begin
+?pmt          ->  -1,227.30     required monthly deposit
+\end{lstlisting}
+
+\subsection{Example: the true rate on a loan}
+
+Borrow \$10{,}000, repay \$500 a month for 24 months:
+
+\begin{lstlisting}
+clrtvm
+24 n  10000 pv  -500 pmt  0 fv
+?i            ->  1.5131        percent per month (about 18.16% APR)
+\end{lstlisting}
+
+% ======================================================================
+\section{Cash-flow analysis}
+
+For a stream of cash flows at regular periods, build the cash-flow bank and
+evaluate net present value or internal rate of return. \w{cf} appends a flow
+(the first one sits at period 0 and is not discounted); \w{cfn} sets a repeat
+count on the most recently entered flow; \w{cfs} lists the bank and \w{clrcf}
+empties it. \w{npv} takes a periodic rate in percent; \w{irr} takes nothing and
+returns the rate in percent.
+
+\begin{lstlisting}
+clrcf
+-50000 cf  15000 cf  5 cfn
+10 npv        ->  6,861.80      net present value at 10%
+irr           ->  15.2382       internal rate of return, % per period
+\end{lstlisting}
+
+% ======================================================================
+\section{Dated cash flows: XNPV and XIRR}
+
+When flows fall on actual calendar dates rather than even periods, use the
+dated bank. A date is the plain integer \w{YYYYMMDD}. Append \w{amount date}
+pairs with \w{xcf}; \w{xcfs} lists them and \w{clrxcf} clears them. \w{xnpv}
+takes an annual rate in percent and discounts each flow by actual/365 from the
+date of the first flow --- the same convention as the spreadsheet XNPV and
+XIRR functions. \w{xirr} returns the annual rate that sets XNPV to zero.
+
+\begin{lstlisting}
+clrxcf
+-10000 20080101 xcf
+2750 20080301 xcf  4250 20081030 xcf  3250 20090215 xcf  2750 20090401 xcf
+9 xnpv        ->  2,086.65      value at 9% per year
+xirr          ->  37.3363       money-weighted annual return, %
+\end{lstlisting}
+
+% ======================================================================
+\section{Interest-rate conversions}
+
+\w{nom>eff} converts a nominal annual rate compounded $m$ times a year into the
+effective annual rate; \w{eff>nom} does the reverse. Both take the rate in
+percent and $m$ as the number of compounding periods.
+
+\begin{lstlisting}
+18 12 nom>eff ->  19.5618       effective annual rate of an 18% APR card
+\end{lstlisting}
+
+% ======================================================================
+\section{Depreciation}
+
+Three methods are provided, each returning the depreciation for the requested
+year. \w{sl} (straight line) is constant and needs only cost, salvage, and
+life. \w{soyd} (sum-of-years-digits) and \w{db} (declining balance) also take
+the year; \w{db} additionally takes a factor (2 for double-declining balance).
+
+\begin{lstlisting}
+50000 5000 7 sl          ->   6,428.57    straight line (every year)
+50000 5000 7 1 soyd      ->  11,250.00    sum-of-years-digits, year 1
+50000 5000 7 1 2 db      ->  14,285.71    double-declining, year 1
+\end{lstlisting}
+
+% ======================================================================
+\section{Bonds}
+
+\subsection{Periodic pricing}
+
+\w{bprice} and \w{byield} price a bond on a coupon date with no calendar: a
+periodic coupon and yield (in percent), the number of whole periods, and the
+redemption value per 100 face.
+
+\begin{lstlisting}
+3 3.5 20 100 bprice      ->  92.89        coupon below yield, so a discount
+92.89 3 20 100 byield    ->   3.5003      yield recovered from the price
+\end{lstlisting}
+
+\subsection{Dated pricing with accrued interest}
+
+\w{xprice} and \w{xyield} price a bond for settlement on any date. They take
+the settlement and maturity dates, the annual coupon and yield in percent, the
+redemption per 100, the coupon frequency (coupons per year), and the day-count
+basis. The basis follows the spreadsheet numbering: 0 is 30/360 (US), 1 is
+actual/actual, 2 is actual/360, 3 is actual/365, and 4 is 30E/360 (European).
+Coupon dates are generated backward from maturity with end-of-month handling,
+and the result is the clean price --- accrued interest netted out. \w{xaccr}
+returns the accrued interest by itself.
+
+\begin{lstlisting}
+# settle    maturity  cpn% yld% redeem freq basis
+20260615 20360515 4.25 4.5 100 2 1 xprice   ->  98.0146   clean price
+20260615 20360515 4.25 2 1        xaccr     ->   0.3580   accrued per 100
+\end{lstlisting}
+
+The dirty (invoice) price is the clean price plus accrued interest. \w{xyield}
+inverts \w{xprice}: give it a price in place of a yield and it returns the
+yield. These functions reproduce the documented spreadsheet PRICE and YIELD
+worked examples to the displayed precision.
+
+% ======================================================================
+\section{Dates and day counts}
+
+A date is the integer \w{YYYYMMDD}; for example \w{20260315} is 15 March 2026.
+\w{ddays} returns the actual number of days between two dates, \w{date+} shifts
+a date by a number of days, and \w{dow} returns the day of week (0 = Sunday).
+\w{yearfrac} returns the fraction of a year between two dates under a chosen
+basis (the same 0--4 numbering as the bonds).
+
+\begin{lstlisting}
+20070115 20070315 ddays        ->  59           actual days between
+20260315 30 date+              ->  20260414     shift a date by days
+20260315 dow                   ->  0            day of week (0=Sun..6=Sat)
+20070101 20080101 3 yearfrac   ->  1.0000       year fraction, act/365
+\end{lstlisting}
+
+% ======================================================================
+\section{Numerical methods and conventions}
+
+\begin{itemize}[leftmargin=1.4em]
+\item Working precision is 34 significant digits with round-half-even. \w{fix}
+      changes only the display (0--16 places); stored values are never
+      truncated.
+\item The rate solvers (\w{?i}, \w{irr}, \w{xirr}, \w{byield}, \w{xyield}) have
+      no closed form. MM-B1 scans the rate axis for a sign change and then
+      bisects in decimal to convergence. Where a cash-flow stream admits more
+      than one internal rate of return, only the first bracket found is
+      reported.
+\item \w{amort} assumes end-of-period payments and works in magnitudes. Round
+      the payment (or solve \w{?pmt} at the display precision) if you want the
+      final balance to close to exactly zero.
+\item \w{xnpv} and \w{xirr} fix the year length at 365 days, matching the
+      spreadsheet convention; \w{yearfrac} basis 1 uses ISDA actual/actual. For
+      dated bonds, basis 0 (30/360) and basis 1 (actual/actual) are the
+      best-tested paths.
+\end{itemize}
+
+% ======================================================================
+\section{Word reference}
+
+\renewcommand{\arraystretch}{1.25}
+\noindent
+\begin{tabular}{@{}p{0.30\textwidth}p{0.64\textwidth}@{}}
+\toprule
+\textbf{Group} & \textbf{Words} \\
+\midrule
+Arithmetic        & \w{+ - * / \^{} chs inv sqrt ln exp abs} \\
+Business percent  & \w{pct} ($x$\% of $y$), \w{\%chg}, \w{markup}, \w{margin} \\
+Stack             & \w{dup drop swap over depth clst . .s} \\
+Constants         & \w{pi e} \\
+TVM set           & \w{n i pv pmt fv} \\
+TVM solve         & \w{?n ?i ?pv ?pmt ?fv} \\
+TVM mode          & \w{begin end clrtvm tvm} \\
+Cash flows        & \w{cf cfn clrcf cfs npv irr} \\
+Amortization      & \w{amort} \\
+Rate conversion   & \w{nom>eff eff>nom} \\
+Depreciation      & \w{sl soyd db} \\
+Bonds (periodic)  & \w{bprice byield} \\
+Dates             & \w{ddays date+ dow yearfrac} \\
+Dated cash flows  & \w{xcf clrxcf xcfs xnpv xirr} \\
+Dated bonds       & \w{xprice xyield xaccr} \\
+Storage           & \w{s0..s9} (store, leaves stack), \w{r0..r9} (recall) \\
+Display / meta    & \w{fix help words quit} \\
+\bottomrule
+\end{tabular}
+
+\vspace{1em}
+\noindent The argument order is always postfix. A few of the multi-argument
+words, in the order their operands are pushed:
+
+\begin{lstlisting}
+y x pct                                          x% of y
+cost salv life sl                                straight-line depreciation
+cost salv life year factor db                    declining-balance depreciation
+nom% m nom>eff                                    nominal -> effective annual
+cpn% yld% n redeem bprice                         periodic bond price
+settle mat cpn% yld% redeem freq basis xprice     dated bond clean price
+settle mat cpn% price redeem freq basis xyield    dated bond yield
+settle mat cpn% freq basis xaccr                  accrued interest per 100
+amount date xcf                                   append a dated cash flow
+\end{lstlisting}
+
+% ======================================================================
+\section{License}
+
+MM-B1 is released under the GNU General Public License, version 3, consistent
+with MM-11 and MM-14. The vendored decNumber library is distributed under the
+permissive ICU license, which the GPL permits redistributing alongside.
+
+\end{document}
